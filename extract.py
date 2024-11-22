@@ -31,7 +31,6 @@ def process_request(block):
     else:
         request_dict["body"] = body
     return request_dict
-
  
 def process_block(block):
     block_dict = {}
@@ -64,14 +63,12 @@ def print_entry(block, args):
             print('<-')
 
 def print_block(block, args):
-    text = json.dumps(block)
     if args.filter:
+        text = json.dumps(block)
         if fnmatch.fnmatch(text, args.filter):
             print_entry(block, args)
     else:
         print_entry(block, args)
-
-
 
 def main():
     parser = argparse.ArgumentParser()
