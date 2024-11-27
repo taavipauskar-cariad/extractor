@@ -11,13 +11,14 @@ s_pattern = '\n'
 def format_info(info):
     info_struct = {}
     extracted = info.split(";", 1)
-    timestapm = extracted[0]
+    timestamp = extracted[0]
     url = extracted[1]
+    url = url.split(":", 4)[4].strip()
     status = re.findall(" - ([0-9]{3})", url)
     status_code = None
     if len(status) > 1:
         status_code = status[0]
-    info_struct["timestamp"] = timestapm
+    info_struct["timestamp"] = timestamp
     info_struct["status"] = status_code
     info_struct["other"] = url
     return info_struct
@@ -72,7 +73,7 @@ def process_block(block):
     return block_dict
 
 def print_entry(block, args):
-    print(f'{block["info"]["other"]} - {block["info"]["status"]}')
+    print(f'{block["info"]["timestamp"]}: {block["info"]["other"]} - {block["info"]["status"]}')
     if args.req:
         if block["request"] is not None:
             print(f'->\n{block["request"]}')
