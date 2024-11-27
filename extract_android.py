@@ -15,9 +15,7 @@ def format_info(info):
     url = extracted[1]
     url = url.split(":", 4)[4].strip()
     status = re.findall(" - ([0-9]{3})", url)
-    status_code = None
-    if len(status) > 1:
-        status_code = status[0]
+    status_code = status[0]
     info_struct["timestamp"] = timestamp
     info_struct["status"] = status_code
     info_struct["other"] = url
@@ -25,7 +23,7 @@ def format_info(info):
 
 def extract_properties(block):
     block_dict = {}
-    for i, line in enumerate(block):
+    for line in block:
         header = line.split(":", 1)
         if len(header) == 2:
             block_dict[header[0]] = header[1]
@@ -33,15 +31,12 @@ def extract_properties(block):
 
 def process_request(block):
     request_dict = {}
-    request_dict["status"] = 0
     body_index = len(block)
     for i, line in enumerate(block):
-        status = re.findall("<-- ([0-9]{3})", line)
-        if status is not None and len(status) > 0:
-            request_dict["status"] = status[0]
         if re.search("^[\{\"]", line):
             body_index = i
             break
+
     request_dict["headers"] = extract_properties(block[0:body_index])
     if body_index != len(block):
         body = ("".join(block[body_index:])).strip(s_pattern)
@@ -68,12 +63,10 @@ def process_block(block):
         response = block[resp_index:]
         block_dict["request"] = process_request(request)
         block_dict["response"]  = process_request(response)
-        if info["status"] is None:
-            info["status"] = block_dict["response"]["status"]
     return block_dict
 
 def print_entry(block, args):
-    print(f'{block["info"]["timestamp"]}: {block["info"]["other"]} - {block["info"]["status"]}')
+    print(f'{block["info"]["timestamp"]}: {block["info"]["other"]}')
     if args.req:
         if block["request"] is not None:
             print(f'->\n{block["request"]}')
@@ -106,26 +99,14 @@ def main():
         block = list()
         for line in file:
             if len(block) > 0:
-                if len(block) == 1:
-                    if "Verbose: ===== Request =====" not in line:
-                        print_block(block, args)
-                        block.clear()
-                        if line.startswith("<-- END HTTP"):
-                            block.append(line)
-                            print_block(block, args)
-                            block.clear()
-                        continue
-                    else:
-                        block.append(line)
-                        continue
-                elif line.startswith("<-- END HTTP"):
+                if line.startswith("<-- END HTTP"):
                     print_block(block, args)
                     block.clear()
                 else:
-                    block.append(line)   
-            if "Info: HTTP" in line:
+                    block.append(line)
+            if re.search("Info\: HTTP [0-9]{1,} <-", line):
                 block.clear()
-                block.append(line) 
+                block.append(line)
 
 if __name__ == "__main__":
     main()
