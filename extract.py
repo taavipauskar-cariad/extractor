@@ -195,10 +195,10 @@ def apply_filter(args, block_dict, os):
 def main():
     os = None
     parser = argparse.ArgumentParser()
-    parser.add_argument("filename", help="Path to ios logfile")
+    parser.add_argument("filename", help="Path to logfile")
     parser.add_argument("--req", help="Include request", action='store_true')
     parser.add_argument("--resp", help="Include response", action='store_true')
-    parser.add_argument("--filter", help="String to filter blocks")
+    parser.add_argument("--filter", help="Unix-Shell wildcard string to filter blocks, example: '*\"Method\": \"POST\"*' ")
     parser.add_argument("--res-ok", help="Include successful requests", action='store_true')
     parser.add_argument("--res-nok", help="Include failed requests", action='store_true')
     args = parser.parse_args()
