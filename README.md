@@ -7,7 +7,7 @@
     filename         Path to logfile
 
 #### optional arguments:
-    -h, --help       show this help message and exit
+    -h, --help       Show this help message and exit
     --req            Include request
     --resp           Include response
     --filter FILTER  Unix-Shell wildcard string to filter blocks example:
