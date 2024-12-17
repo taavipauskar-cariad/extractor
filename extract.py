@@ -5,192 +5,307 @@ import pathlib
 import fnmatch
 import json
 import re
+import copy
 
 s_pattern = '\n'
 
-def format_android_info(info):
-    info_struct = {}
-    extracted = info.split(";", 1)
-    timestamp = extracted[0]
-    url = extracted[1]
-    url = url.split(":", 4)[4].strip()
-    status_regex = re.compile(" - ([0-9]{3})")
-    status = status_regex.findall(url)
-    status_code = status[0]
-    info_struct["timestamp"] = timestamp
-    info_struct["status"] = status_code
-    info_struct["other"] = url
-    return info_struct
+timestamp_regex = re.compile("([0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}:[0-9]{3}:)")
+request_line = re.compile("\[HTTPClient\]")
+method_re = re.compile("([0-9]{3})?( - )?([A-Z]{3,}) (.*)")
+header_re = re.compile("(\-H) '(.*)'")
+body_re = re.compile("(\-d) '(.*)'")
+uuid_re = re.compile("UUID (.*)")
+android_request_line = re.compile("Info\: HTTP [0-9]{1,} <-")
+android_status_regex = re.compile(" - ([0-9]{3})")
+android_body_regex = re.compile("^[\{\"]")
 
-def extract_android_properties(block):
-    block_dict = {}
-    for line in block:
-        header = line.split(":", 1)
-        if len(header) == 2:
-            block_dict[header[0]] = header[1]
-    return block_dict
+block_cache = {}
 
-def process_android_request(block):
-    request_dict = {}
-    body_index = len(block)
-    body_regex = re.compile("^[\{\"]")
-    for i, line in enumerate(block):
-        if body_regex.search(line):
-            body_index = i
-            break
-    request_dict["headers"] = extract_android_properties(block[0:body_index])
-    if body_index != len(block):
-        body = ("".join(block[body_index:])).strip(s_pattern)
-    else:
-        body = None
-    request_dict["body"] = body
-    return request_dict
- 
-def process_android_block(block):
-    block_dict = {}
-    req_index = None
-    resp_index = None
-    info = format_android_info(block[0].strip(s_pattern))
-    block_dict["info"] = info
-    block_dict["request"] = None
-    block_dict["response"] = None
-    if len(block) > 1:
+class Processor:
+    def __init__(self):
+        pass
+
+    def print_block(self, block, args):
+        block_dict = self.process_block(block)
+        if args.res_ok:
+            if int(block_dict["info"]["status"]) < 400:
+                self.apply_filter(args, block_dict)
+        elif args.res_nok:
+            if int(block_dict["info"]["status"]) >= 400:
+                self.apply_filter(args, block_dict)
+        else:
+            self.apply_filter(args, block_dict)
+
+    def apply_filter(self, args, block_dict):
+        if args.filter:
+            text = json.dumps(block_dict)
+            if fnmatch.fnmatch(text, args.filter):
+                self.print_entry(block_dict, args)
+        else:
+            self.print_entry(block_dict, args)
+
+class Android(Processor):
+    def format_android_info(self, info):
+        info_struct = {}
+        extracted = info.split(";", 1)
+        timestamp = extracted[0]
+        url = extracted[1]
+        url = url.split(":", 4)[4].strip()
+        status = android_status_regex.findall(url)
+        status_code = status[0]
+        info_struct["timestamp"] = timestamp
+        info_struct["status"] = status_code
+        info_struct["other"] = url
+        return info_struct
+
+    def extract_android_properties(self, block):
+        block_dict = {}
+        for line in block:
+            header = line.split(":", 1)
+            if len(header) == 2:
+                block_dict[header[0]] = header[1]
+        return block_dict
+
+    def process_android_request(self, block):
+        request_dict = {}
+        body_index = len(block)
+        
         for i, line in enumerate(block):
-            if "===== Request =====" in line:
+            if android_body_regex.search(line):
+                body_index = i
+                break
+        request_dict["headers"] = self.extract_android_properties(block[0:body_index])
+        if body_index != len(block):
+            body = ("".join(block[body_index:])).strip(s_pattern)
+        else:
+            body = None
+        request_dict["body"] = body
+        return request_dict
+    
+    def process_block(self, block):
+        block_dict = {}
+        req_index = None
+        resp_index = None
+        info = self.format_android_info(block[0].strip(s_pattern))
+        block_dict["info"] = info
+        block_dict["request"] = None
+        block_dict["response"] = None
+        if len(block) > 1:
+            for i, line in enumerate(block):
+                if "===== Request =====" in line:
+                    req_index = i        
+                if "===== Response =====" in line:
+                    resp_index = i
+            request = block[req_index:resp_index - 1]
+            response = block[resp_index:]
+            block_dict["request"] = self.process_android_request(request)
+            block_dict["response"]  = self.process_android_request(response)
+        return block_dict
+
+    def print_entry(self, block, args):
+        print(f'{block["info"]["timestamp"]}: {block["info"]["other"]}')
+        if args.req:
+            if block["request"] is not None:
+                print(f'->\n{block["request"]}')
+            else:
+                print('->')
+        if args.resp:
+            if block["response"] is not None:
+                print(f'<-\n {block["response"]["body"]}')
+            else:
+                print('<-')
+
+    def print_requests(self, args, filepath):
+        with open(filepath) as file:
+            block = list()
+            for line in file:
+                if len(block) > 0:
+                    if line.startswith("<-- END HTTP"):
+                        self.print_block(block, args)
+                        block.clear()
+                    else:
+                        block.append(line)
+                if android_request_line.search(line):
+                    block.clear()
+                    block.append(line)
+
+
+class Ios(Processor):
+    def extract_ios_properties(self, block):
+        block_dict = {}
+        for i, line in enumerate(block):
+            if line.startswith("["):
+                key = line.strip(s_pattern)[1:-1].lower()
+                block_dict[key] = block[i + 1].strip(s_pattern).lower()
+        return block_dict
+
+    def process_ios_request(self, block):
+        request_dict = {}
+        headers_index = None
+        body_index = None
+        for i, line in enumerate(block):
+            if line.startswith("### Headers"): headers_index = i
+            if line.startswith("### Body"): body_index = i
+        request_dict["headers"] = self.extract_ios_properties(block[headers_index:body_index])
+        body = ("".join(block[body_index + 2:])).strip(s_pattern)
+        if "Request body is empty" in body:
+            request_dict["body"] = ""
+        else:
+            request_dict["body"] = body
+        return request_dict
+    
+    def process_block(self, block):
+        block_dict = {}
+        req_index = None
+        resp_index = None
+        for i, line in enumerate(block):
+            if line.startswith("## REQUEST"):
                 req_index = i        
-            if "===== Response =====" in line:
+            if line.startswith("## RESPONSE"):
                 resp_index = i
+        info = block[0:req_index - 1]
         request = block[req_index:resp_index - 1]
         response = block[resp_index:]
-        block_dict["request"] = process_android_request(request)
-        block_dict["response"]  = process_android_request(response)
-    return block_dict
+        block_dict["info"] = self.extract_ios_properties(info)
+        block_dict["request"] = self.process_ios_request(request)
+        block_dict["response"]  = self.process_ios_request(response)
+        if block_dict.get("info", {}).get("status") is None:
+            block_dict["info"]["status"] = 0
+        return block_dict
 
-def print_android_entry(block, args):
-    print(f'{block["info"]["timestamp"]}: {block["info"]["other"]}')
-    if args.req:
-        if block["request"] is not None:
-            print(f'->\n{block["request"]}')
-        else:
-            print('->')
-    if args.resp:
-        if block["response"] is not None:
-            print(f'<-\n {block["response"]["body"]}')
-        else:
-            print('<-')
+    def print_entry(self, block, args):
+        print(f'{block["info"]["request date"]}: {block["info"]["method"]}:{block["info"]["status"]} {block["info"]["url"]}')
+        if args.req:
+            if len(block["request"]["body"]) > 0:
+                print(f'->\n{block["request"]["body"]}')
+            else:
+                print('->')
+        if args.resp:
+            if len(block["response"]["body"]) > 0:
+                print(f'<-\n {block["response"]["body"]}')
+            else:
+                print('<-')
 
-def print_android_requests(args, filepath, os):
-    request_line = re.compile("Info\: HTTP [0-9]{1,} <-")
-    with open(filepath) as file:
-        block = list()
-        for line in file:
-            if len(block) > 0:
-                if line.startswith("<-- END HTTP"):
-                    print_block(block, args, os)
+    def print_requests(self, args, filepath):
+        with open(filepath) as file:
+            block = list()
+            for line in file:
+                if line.startswith("## INFO"):
                     block.clear()
-                else:
                     block.append(line)
-            if request_line.search(line):
-                block.clear()
-                block.append(line)
+                if line.startswith("------------------------------"):
+                    self.print_block(block, args)
+                if len(block) > 0:
+                    block.append(line)
 
-def extract_ios_properties(block):
-    block_dict = {}
-    for i, line in enumerate(block):
-        if line.startswith("["):
-            key = line.strip(s_pattern)[1:-1].lower()
-            block_dict[key] = block[i + 1].strip(s_pattern).lower()
-    return block_dict
+class MyAudi(Processor):
+    def print_requests(self, args, filepath):
+        with open(filepath) as file:
+            block = list()
+            for line in file:
+                if len(block) > 0:
+                    if timestamp_regex.search(line):
+                        self.print_block(block, args)
+                        block.clear()
+                    else:
+                        block.append(line)
+                if request_line.search(line):
+                    block.clear()
+                    block.append(line)
 
-def process_ios_request(block):
-    request_dict = {}
-    headers_index = None
-    body_index = None
-    for i, line in enumerate(block):
-        if line.startswith("### Headers"): headers_index = i
-        if line.startswith("### Body"): body_index = i
-    request_dict["headers"] = extract_ios_properties(block[headers_index:body_index])
-    body = ("".join(block[body_index + 2:])).strip(s_pattern)
-    if "Request body is empty" in body:
-        request_dict["body"] = ""
-    else:
+    def extract_myaudi_headers(self, block):
+        block_dict = {}
+        timestamp = timestamp_regex.search(block[0]).group(0)
+        block_dict["request date"] = timestamp
+
+        method = method_re.search(block[1]).group(3)
+        status = method_re.search(block[1]).group(1)
+        url = method_re.search(block[1]).group(4)
+        block_dict["method"] = method
+        block_dict["status"] = status
+        block_dict["url"] = url
+        
+        for line in block:
+            match = header_re.search(line)
+            if match:
+                header = match.group(2).split(":", 1)
+                if len(header) == 2:
+                    block_dict[header[0].strip()] = header[1].strip()
+        return block_dict
+
+    def extract_myaudi_request(self, block):
+        request_dict = {}
+        body = ""
+        
+        for line in block:
+            match = body_re.search(line)
+            if match:
+                body = match.group(0).strip()
         request_dict["body"] = body
-    return request_dict
- 
-def process_ios_block(block):
-    block_dict = {}
-    req_index = None
-    resp_index = None
-    for i, line in enumerate(block):
-        if line.startswith("## REQUEST"):
-            req_index = i        
-        if line.startswith("## RESPONSE"):
-            resp_index = i
-    info = block[0:req_index - 1]
-    request = block[req_index:resp_index - 1]
-    response = block[resp_index:]
-    block_dict["info"] = extract_ios_properties(info)
-    block_dict["request"] = process_ios_request(request)
-    block_dict["response"]  = process_ios_request(response)
-    if block_dict.get("info", {}).get("status") is None:
-        block_dict["info"]["status"] = 0
-    return block_dict
+        return request_dict
 
-def print_ios_entry(block, args):
-    print(f'{block["info"]["request date"]}: {block["info"]["method"]}:{block["info"]["status"]} {block["info"]["url"]}')
-    if args.req:
-        if len(block["request"]["body"]) > 0:
-            print(f'->\n{block["request"]["body"]}')
+    def extract_myaudi_response(self, block):
+        response_dict = {}
+        body = ""
+        bodyIndex = None
+        for i, line in enumerate(block):
+            if line.startswith("\n"):
+                bodyIndex = i
+        if bodyIndex is not None:
+            body = block[bodyIndex+1:]
+        response_dict["body"] = body
+        return response_dict
+                
+    def process_block(self, block):
+        uuid = uuid_re.search(block[0]).group(1)
+        block_dict = {}
+        if " Request for " in block[0]:
+            request_block = copy.deepcopy(block)
+            block_dict.update({"request": request_block})
+            if not self.is_block_in_cache(uuid):
+                self.add_block_dict_to_cache(uuid, request_block, "tmp")
+
+        elif " Response for " in block[0]:
+            response_block = copy.deepcopy(block)
+            block_dict.update({"response": response_block})
+            if self.is_block_in_cache(uuid):
+                cached_block = self.get_cached_block(uuid)
+                block_dict.update({"request": cached_block["tmp"]})
+                block_dict["info"] = self.extract_myaudi_headers(block_dict["request"])
+                block_dict["request"] = self.extract_myaudi_request(block_dict["request"])
+                block_dict["response"] = self.extract_myaudi_response(block_dict["response"])
+        
+        if block_dict is not None and "request" in block_dict and "response" in block_dict:    
+                return block_dict
         else:
-            print('->')
-    if args.resp:
-        if len(block["response"]["body"]) > 0:
-            print(f'<-\n {block["response"]["body"]}')
+                return None
+        
+    def is_block_in_cache(self, uuid):
+        if uuid in block_cache:
+            return True
         else:
-            print('<-')
+            return False
+        
+    def add_block_dict_to_cache(self, uuid, block_dict, action):
+        block_cache[uuid] = {action: block_dict}
 
-def print_ios_requests(args, filepath, os):
-    with open(filepath) as file:
-        block = list()
-        for line in file:
-            if line.startswith("## INFO"):
-                block.clear()
-                block.append(line)
-            if line.startswith("------------------------------"):
-                print_block(block, args, os)
-            if len(block) > 0:
-                block.append(line)
+    def get_cached_block(self, uuid):
+        return block_cache.pop(uuid)
 
-def print_block(block, args, os):
-    block_dict = process_block(block, os)
-    if args.res_ok:
-        if int(block_dict["info"]["status"]) < 400:
-            apply_filter(args, block_dict, os)
-    elif args.res_nok:
-        if int(block_dict["info"]["status"]) >= 400:
-            apply_filter(args, block_dict, os)
-    else:
-        apply_filter(args, block_dict, os)
+    def print_entry(self, block, args):
+        if block is not None:
+            print(f'{block["info"]["request date"]}: {block["info"]["method"]}:{block["info"]["status"]} {block["info"]["url"]}')
+            if args.req:
+                if len(block["request"]["body"]) > 0:
+                    print(f'->\n{block["request"]["body"]}')
+                else:
+                    print('->')
+            if args.resp:
+                if len(block["response"]["body"]) > 0:
+                    print(f'<-\n {block["response"]["body"]}')
+                else:
+                    print('<-')
 
-def process_block(block, os):
-    if os == "ios":
-        return process_ios_block(block)
-    if os == "android":
-        return process_android_block(block)
-
-def print_entry(block_dict, args, os):
-    if os == "ios":
-        print_ios_entry(block_dict, args)
-    if os == "android":
-        print_android_entry(block_dict, args)
-
-def apply_filter(args, block_dict, os):
-    if args.filter:
-        text = json.dumps(block_dict)
-        if fnmatch.fnmatch(text, args.filter):
-            print_entry(block_dict, args, os)
-    else:
-        print_entry(block_dict, args, os)
 
 def main():
     os = None
@@ -209,15 +324,21 @@ def main():
             os = "ios"
         elif first_line.startswith("App Information"):
             os = "android"
+        elif first_line.startswith("Log de.myaudi"):
+            os = "myaudi"
         else:
             os = "unknown"
 
     if os == "ios":
-        print_ios_requests(args, filepath, os) 
+        processor = Ios()
     elif os == "android":
-        print_android_requests(args, filepath, os) 
+        processor = Android()
+    elif os == "myaudi":
+        processor = MyAudi()
     else:
         print("No suitlable logs found!")
+
+    processor.print_requests(args, filepath)
 
 if __name__ == "__main__":
     main()
