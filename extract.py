@@ -217,7 +217,6 @@ class MyAudi(Processor):
         block_dict = {}
         timestamp = timestamp_regex.search(block[0]).group(0)
         block_dict["request date"] = timestamp
-
         method = method_re.search(block[1]).group(3)
         status = method_re.search(block[1]).group(1)
         url = method_re.search(block[1]).group(4)
@@ -236,7 +235,6 @@ class MyAudi(Processor):
     def extract_myaudi_request(self, block):
         request_dict = {}
         body = ""
-        
         for line in block:
             match = body_re.search(line)
             if match:
@@ -257,8 +255,8 @@ class MyAudi(Processor):
         return response_dict
                 
     def process_block(self, block):
-        uuid = uuid_re.search(block[0]).group(1)
         block_dict = {}
+        uuid = uuid_re.search(block[0]).group(1)
         if " Request for " in block[0]:
             request_block = copy.deepcopy(block)
             block_dict.update({"request": request_block})
@@ -271,7 +269,7 @@ class MyAudi(Processor):
             if self.is_block_in_cache(uuid):
                 cached_block = self.get_cached_block(uuid)
                 block_dict.update({"request": cached_block["tmp"]})
-                block_dict["info"] = self.extract_myaudi_headers(block_dict["request"])
+                block_dict["info"] = self.extract_myaudi_headers(block_dict["response"])
                 block_dict["request"] = self.extract_myaudi_request(block_dict["request"])
                 block_dict["response"] = self.extract_myaudi_response(block_dict["response"])
         
