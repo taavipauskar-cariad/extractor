@@ -263,6 +263,7 @@ class MyAudiAndroid(Processor):
         for i, line in enumerate(block):
             if line.startswith("\n"):
                 bodyIndex = i
+                break
         if bodyIndex is not None:
             body = block[bodyIndex+1:]
         response_dict["body"] = body
@@ -378,6 +379,7 @@ class MyAudiIos(Processor):
         for i, line in enumerate(block):
             if line.startswith("\n"):
                 bodyIndex = i
+                break
         if bodyIndex is not None:
             body = block[bodyIndex+1:]
         response_dict["body"] = body
