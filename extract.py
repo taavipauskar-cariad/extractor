@@ -9,8 +9,10 @@ import copy
 
 s_pattern = '\n'
 
-timestamp_regex = re.compile("([0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}:[0-9]{3}:)")
-request_line = re.compile("\[HTTPClient\]")
+myaudi_android_timestamp_regex = re.compile("([0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}:[0-9]{3}:)")
+myaudi_ios_timestamp_regex = re.compile("([A-Z]{1} [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}.[0-9]{3})")
+myaudi_android_request_line = re.compile("\[HTTPClient\]")
+myaudi_ios_request_line = re.compile("\[HTTPClient\].*\[Client perform")
 method_re = re.compile("([0-9]{3})?( - )?([A-Z]{3,}) (.*)")
 header_re = re.compile("(\-H) '(.*)'")
 body_re = re.compile("(\-d) '(.*)'")
@@ -27,10 +29,10 @@ class Processor:
 
     def print_block(self, block, args):
         block_dict = self.process_block(block)
-        if args.res_ok:
+        if block_dict is not None and args.res_ok:
             if int(block_dict["info"]["status"]) < 400:
                 self.apply_filter(args, block_dict)
-        elif args.res_nok:
+        elif block_dict is not None and args.res_nok:
             if int(block_dict["info"]["status"]) >= 400:
                 self.apply_filter(args, block_dict)
         else:
@@ -43,6 +45,18 @@ class Processor:
                 self.print_entry(block_dict, args)
         else:
             self.print_entry(block_dict, args)
+
+    def is_block_in_cache(self, uuid):
+        if uuid in block_cache:
+            return True
+        else:
+            return False
+        
+    def add_block_dict_to_cache(self, uuid, block_dict, action):
+        block_cache[uuid] = {action: block_dict}
+
+    def get_cached_block(self, uuid):
+        return block_cache.pop(uuid)
 
 class Android(Processor):
     def format_android_info(self, info):
@@ -198,24 +212,24 @@ class Ios(Processor):
                 if len(block) > 0:
                     block.append(line)
 
-class MyAudi(Processor):
+class MyAudiAndroid(Processor):
     def print_requests(self, args, filepath):
         with open(filepath) as file:
             block = list()
             for line in file:
                 if len(block) > 0:
-                    if timestamp_regex.search(line):
+                    if myaudi_android_timestamp_regex.search(line):
                         self.print_block(block, args)
                         block.clear()
                     else:
                         block.append(line)
-                if request_line.search(line):
+                if myaudi_android_request_line.search(line):
                     block.clear()
                     block.append(line)
 
     def extract_myaudi_headers(self, block):
         block_dict = {}
-        timestamp = timestamp_regex.search(block[0]).group(0)
+        timestamp = myaudi_android_timestamp_regex.search(block[0]).group(0)
         block_dict["request date"] = timestamp
         method = method_re.search(block[1]).group(3)
         status = method_re.search(block[1]).group(1)
@@ -277,18 +291,6 @@ class MyAudi(Processor):
                 return block_dict
         else:
                 return None
-        
-    def is_block_in_cache(self, uuid):
-        if uuid in block_cache:
-            return True
-        else:
-            return False
-        
-    def add_block_dict_to_cache(self, uuid, block_dict, action):
-        block_cache[uuid] = {action: block_dict}
-
-    def get_cached_block(self, uuid):
-        return block_cache.pop(uuid)
 
     def print_entry(self, block, args):
         if block is not None:
@@ -304,6 +306,97 @@ class MyAudi(Processor):
                 else:
                     print('<-')
 
+class MyAudiIos(Processor):
+    def print_requests(self, args, filepath):
+        with open(filepath) as file:
+            block = list()
+            for line in file:
+                if len(block) > 0:
+                    if myaudi_ios_timestamp_regex.search(line):
+                        self.print_block(block, args)
+                        block.clear()
+                    else:
+                        block.append(line)
+                if myaudi_ios_request_line.search(line):
+                    block.clear()
+                    block.append(line)
+
+    def process_block(self, block):
+        block_dict = {}
+        uuid = uuid_re.search(block[0]).group(1)
+        if " Performing request " in block[0]:
+            request_block = copy.deepcopy(block)
+            block_dict.update({"request": request_block})
+            if not self.is_block_in_cache(uuid):
+                self.add_block_dict_to_cache(uuid, request_block, "tmp")
+
+        elif " Response for " in block[0]:
+            response_block = copy.deepcopy(block)
+            block_dict.update({"response": response_block})
+            if self.is_block_in_cache(uuid):
+                cached_block = self.get_cached_block(uuid)
+                block_dict.update({"request": cached_block["tmp"]})
+                block_dict["info"] = self.extract_myaudi_ios_headers(block_dict["response"])
+                block_dict["request"] = self.extract_myaudi_ios_request(block_dict["request"])
+                block_dict["response"] = self.extract_myaudi_ios_response(block_dict["response"])
+        
+        if block_dict is not None and "request" in block_dict and "response" in block_dict:    
+            return block_dict
+        else:
+            return None
+        
+    def extract_myaudi_ios_headers(self, block):
+        block_dict = {}
+        method = method_re.search(block[1]).group(3)
+        status = method_re.search(block[1]).group(1)
+        url = method_re.search(block[1]).group(4)
+        block_dict["method"] = method
+        block_dict["status"] = status
+        block_dict["url"] = url
+        
+        for line in block:
+            header = line.split(":", 1)
+            if len(header) == 2:
+                block_dict[header[0]] = header[1]
+        block_dict["request date"] = block_dict["Date"].strip()
+        return block_dict
+    
+    def extract_myaudi_ios_request(self, block):
+        request_dict = {}
+        body = ""
+        for line in block:
+            match = body_re.search(line)
+            if match:
+                body = match.group(0).strip()
+        request_dict["body"] = body
+        return request_dict
+
+    def extract_myaudi_ios_response(self, block):
+        response_dict = {}
+        body = ""
+        bodyIndex = None
+        for i, line in enumerate(block):
+            if line.startswith("\n"):
+                bodyIndex = i
+        if bodyIndex is not None:
+            body = block[bodyIndex+1:]
+        response_dict["body"] = body
+        return response_dict
+
+
+    def print_entry(self, block, args):
+        if block is not None:
+            print(f'{block["info"]["request date"]}: {block["info"]["method"]}:{block["info"]["status"]} {block["info"]["url"]}')
+            if args.req:
+                if len(block["request"]["body"]) > 0:
+                    print(f'->\n{block["request"]["body"]}')
+                else:
+                    print('->')
+            if args.resp:
+                if len(block["response"]["body"]) > 0:
+                    print(f'<-\n {block["response"]["body"]}')
+                else:
+                    print('<-')
 
 def main():
     os = None
@@ -318,21 +411,33 @@ def main():
     filepath = pathlib.Path(args.filename)
     with open(filepath) as file:
         first_line = file.readline()
+        if "OneTouchApp" in first_line:
+            for i, l in enumerate(file, start=1):
+                if i == 1:
+                    first_line = l
+                    break
+                
         if first_line.startswith("Device:"):
             os = "ios"
         elif first_line.startswith("App Information"):
             os = "android"
         elif first_line.startswith("Log de.myaudi"):
-            os = "myaudi"
+            os = "myaudi_android"
+        elif first_line.startswith("App: myAudi"):
+            os = "myaudi_ios"
         else:
+            print(first_line)
             os = "unknown"
+            exit(1)
 
     if os == "ios":
         processor = Ios()
     elif os == "android":
         processor = Android()
-    elif os == "myaudi":
-        processor = MyAudi()
+    elif os == "myaudi_android":
+        processor = MyAudiAndroid()
+    elif os == "myaudi_ios":
+        processor = MyAudiIos()
     else:
         print("No suitlable logs found!")
 
